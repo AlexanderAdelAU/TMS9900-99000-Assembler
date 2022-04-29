@@ -1,0 +1,21 @@
+R11	EQU 11
+R4	EQU 4
+R1	EQU 1
+R2	EQU 2
+R3	EQU 3
+R3'	EQU R4
+SP	EQU 10
+R0 EQU 0
+
+EXPN EQU 80H
+	ORG 0100H
+
+ABC':	MOV	R4,@-10(R4)
+		TEXT	'A'
+		EVEN
+		LI  R3,EXPN+15*256
+		LI		R3','1'
+
+	END
+
+; --- End of Compilation ---

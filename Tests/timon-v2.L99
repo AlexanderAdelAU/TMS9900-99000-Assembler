@@ -1,0 +1,1431 @@
+                        ;******************************************************
+                        ;						      *
+                        ; TMS9900 MONITOR, INSTANT ASSEMBLER AND DISASSEMBLER *
+                        ;						      *
+                        ;******************************************************
+                        ;
+                        ;	FILE NAME:	TIMON.A99
+                        ;	TITLE=: 	TMS9900 MONITOR V2.1 <<
+                        ;	AUTHOR: 	ALEX CAMERON
+                        ;	WRITTEN:	1983 TO 2019
+                        ;
+                        ;******************************************************
+                        ;
+                        ; Comments:	1.The monitor is set at a baud rate 19200 - but can easily be altered
+                        ;		2.TMR9902 if fed by a 4Mhz Clock
+                        ;
+                        ; Commands.   The following commands are available:
+                        ;
+                        ;		Q (QBOOT), U (HEXLOAD),G (GO TO) M(MOVE) F(FIND),O (OUTPUT), W (WORK SPACE),R (REGISTERS),P(PRINT)
+                        ;		X(XCUTE),L(LOWW),H(SETBP),S(STEP),T(TRACE),/(CHAR),.(INSTANT),O(OPEN)
+                        ;*********************************************************
+                        ;
+  0001                  TRUE	EQU	1
+  0000                  FALSE	EQU	0
+  0001                  LOWRAM	EQU	TRUE			
+  0000                  HIRAM   EQU 	FALSE
+                        ;***************************
+                        ;DEFINE REGISTERS
+                        ;****************************
+  0000                  R0	EQU	0
+  0001                  R1	EQU	1
+  0002                  R2	EQU	2
+  0003                  R3	EQU	3
+  0004                  R4	EQU	4
+  0005                  R5	EQU	5
+  0006                  R6	EQU	6
+  0007                  R7	EQU	7
+  0008                  R8	EQU	8
+  0009                  R9	EQU	9
+  000A                  R10	EQU	10
+  000B                  R11	EQU	11
+  000C                  R12	EQU	12
+  000D                  R13	EQU	13
+  000E                  R14	EQU	14
+  000F                  R15	EQU	15
+                        ;
+                        ;---define some DXOP's - These are for this ROM Resident Monitor (TIMON) only
+                        ;
+                        	DXOP	CALL,0		;SUBROUTINE CALL
+                        	DXOP	RET,1		;SUBROUTINE RETURE
+                        	DXOP	READ,2		;READ A CHARACTER
+                        	DXOP	WRITE,3		;WRITE A CHARACTER
+                        	DXOP	PUSHREG,4	;PUSHES R0-RX ONTO STACK	
+                        	DXOP	POPREG,5	;POPS RX- R0 	
+                        ;
+  000D                  CR	EQU	0DH		;CARRIAGE RETURN
+  000A                  LF	EQU	0AH		;LINE FEED
+                        ;
+  0001                  	IF LOWRAM
+  EFA0                  WORKSP		EQU		0EFA0H	
+  EFC0                  XOPWP		EQU		0EFC0H	
+  EFE0                  INT3WP		EQU		0EFE0H	
+                        	ENDI
+  0000                  	IF	HIRAM
+                        WORKSP		EQU		0FA0H
+                        XOPWP		EQU		0FC0H
+                        INT3WP		EQU		0FE0H
+                        	ENDI
+                        ;
+  0080                  CRUBASE 	EQU	80H
+                        ;
+  F000                  TIMON	AORG	0F000H
+                        ;
+                        ; WARM START ENTRY INTO TIMON
+                        ;
+  F000   1005           	JMP	START			;WARM START F002 IS COLD START 
+                        ;
+                        ; INITIALISATION
+                        ;
+  F002   0360           INITIAL	RSET					;CLEAR INTERRUPT MASK
+  F004   02E0 EFA0      	LWPI	WORKSP
+  F008   0460 FB98      	B	@INITIO				;SET UP IO AND BAUD RATE
+                        ;
+                        ;WARM START ENTRY POINT
+                        ;
+                        START
+  F00C   0360           	RSET					;DISABLE INTERRUPTS
+  F00E   02E0 EFA0      	LWPI	WORKSP
+  F012   04C0           	CLR	R0				;SET UP RESET AND INTERRUPT 3 VECTORS
+  F014   0201 F07A      	LI	R1,RESTAB
+  F018   1000           INITO	NOP					;WRITE ENABLE IF USING SINGLE STEP HARDWARE
+  F01A   CC31           	MOV	*R1+,*R0+
+  F01C   0280 0010      	CI	R0,3*4+4			;2 WORDS PER VECTOR
+  F020   16FB           	JNE	INITO
+  F022   0200 0040      	LI	R0,40H				;SET UP XOP0-XOP5 VECTORS
+  F026   0201 F08A      	LI	R1,XOPTAB
+  F02A   0202 EFC0      	LI	R2,XOPWP
+  F02E   CC02           INIT1	MOV	R2,*R0+
+  F030   1000           	NOP
+  F032   CC31           	MOV	*R1+,*R0+
+  F034   0280 0058      	CI	R0,58H
+  F038   16FA           	JNE	INIT1
+  F03A   04CF           	CLR	R15			;LOW
+  F03C   04CE           	CLR	R14			;ADDRESS OF LAST OPEN CELL
+  F03E   04E0 EFFE      	CLR	@2*R15+INT3WP		;CLEAR "USER PROGRAM" STATUS
+  F042   0200 EE00      	LI	R0,WORKSP-200H+60H	;INITIALISE STACK LIMIT
+  F046   C800 EFD2      	MOV	R0,@2*R9+XOPWP
+  F04A   C820 F07A      INIT2	MOV	@RESTAB,@2*R10+XOPWP	;INITIALISE STACK POINTER
+  F04E   EFD4           
+                        ;
+  F050   2CE0 F096      BANNER	WRITE	@MESS00			;_PRINT ">> TMS9900 MONITOR <<"
+                        ;	WRITE	@MESS00
+                        ;	READ	R1			;READ ANY RUBBISH
+  F054   2CE0 F0AE      PROMPT	WRITE	@MESS01			;PRINT PROMPTER
+  F058   06A0 F1B6      	BL	@HEXIN			;OBTAIN ADDRESS IN R2 AND INSTRUCTION IN R1
+  F05C   0204 0013      	LI	R4,19			;20 POSSIBLE INSTRUCTIONS
+  F060   9064 F110      MON01	CB	@INTAB(R4),R1		;SEARCH INTAB
+  F064   1305           	JEQ	MON03
+  F066   0604           	DEC	R4
+  F068   18FB           	JOC	MON01
+  F06A   2CE0 F0B5      MON02	WRITE	@MESS02			;PRINT " ??"
+  F06E   10F2           	JMP	PROMPT
+  F070   0A14           MON03	SLA	R4,1					;BRANCH TO APPROPRIATEE ROUTINE
+  F072   C124 F124      	MOV	@SUBTAB(R4),R4
+  F076   C0C3           	MOV	R3,R3					;TEST HEXIN FLAG
+  F078   0454           	B	*R4
+                        ;
+                        ; TABLES AND MESSAGES
+                        ;
+  F07A   EFA0 F002      RESTAB	WORD	WORKSP,INITIAL,0,0,0,0,INT3WP,INT3
+  F07E   0000 0000      
+  F082   0000 0000      
+  F086   EFE0 F6A4      
+  F08A   F154 F15C      XOPTAB	WORD	XOP0,XOP1,XOP2,XOP3,XOP4,XOP5
+  F08E   F160 F18A      
+  F092   F1A0 F1AC      
+  F096   3E20 544D      MESS00	TEXT	'> TMS9900 MONITOR V2.1 <'
+  F09A   5339 3930      
+  F09E   3020 4D4F      
+  F0A2   4E49 544F      
+  F0A6   5220 5632      
+  F0AA   2E31 203C      
+                        	;	BYTE	0
+  F0AE   0D0A           MESS01	BYTE	CR,LF
+  F0B0   2020 203E      		TEXT	'   >'
+  F0B4   00             		BYTE	0
+  F0B5   203F 3F        MESS02	TEXT	' ??'
+  F0B8   00             		BYTE	0
+  F0B9   0A0D 0A        MESS03	BYTE	LF,CR,LF
+  F0BC   2020 2020      		TEXT	'     '
+  F0C0   20             
+  F0C1   00             		BYTE	0
+  F0C2   2053 5441      MESS04	TEXT	' STACK OVERFLOW AT'
+  F0C6   434B 204F      
+  F0CA   5645 5246      
+  F0CE   4C4F 5720      
+  F0D2   4154           
+  F0D4   00             		BYTE	0
+  F0D5   40             ATHASH	BYTE	'@'
+  F0D6   2300           HASH	BYTE	'#',0
+  F0D8   2C00           COMMA	BYTE	',',0
+  F0DA   2020 2020      R		TEXT	'    '
+  F0DE   5200           RR		BYTE	'R',0
+  F0E0                  		EVEN
+  F0E0   3031 3233      HEXTAB	TEXT	'0123456789ABCDEF'
+  F0E4   3435 3637      
+  F0E8   3839 4142      
+  F0EC   4344 4546      
+  F0F0   3020 3120      NUMTAB	TEXT	'0 1 2 3 4 5 6 7 8 9 101112131415'
+  F0F4   3220 3320      
+  F0F8   3420 3520      
+  F0FC   3620 3720      
+  F100   3820 3920      
+  F104   3130 3131      
+  F108   3132 3133      
+  F10C   3134 3135      
+  F110   1A             INTAB	BYTE	1AH			;CONTROL Z(CLEARS SCREEN)
+  F111   2F2F 5155      	TEXT	'//QUGMZOWRPXLHST/. '
+  F115   474D 5A4F      
+  F119   5752 5058      
+  F11D   4C48 5354      
+  F121   2F2E 20        
+  F124                  	EVEN
+  F124   F050 0000      SUBTAB	WORD	BANNER,0,0,QBOOT,HEXLOAD,GO,MOVE,FIND,OUTPUT,WP,REGIST,PRINT
+  F128   0000 FB90      
+  F12C   FB14 FA96      
+  F130   F9DA FA48      
+  F134   FAD0 FAB6      
+  F138   F732 F780      
+  F13C   F660 FAA0      	WORD	XCUTE,LOWW,SETBP,STEP,TRACE,CHAR,INSTANT,OPEN
+  F140   F616 F666      
+  F144   F654 F240      
+  F148   F3F2 F1FC      
+                        ;
+                        
+  F14C   001F           MASK32	WORD	001FH
+  F14E   000F           MASK16	WORD	000FH
+  F150   0007           MASK8	WORD	0007H
+  F152   0003           MASK3	WORD	0003H
+                        ;
+                        ; XOP @XX,0 CALL @XX
+                        ;
+                        ; SUBROUTINE CALLING MECHANISM
+                        ;
+  F154   064A           XOP0	DECT	R10				;DECREMENT STACK POINTER
+                        ;	C	R10,R9				;CHECK FOR STACK OVERFLOW
+                        ;	JH	XOP0AA
+                        ;XOP0XXX	LWPI	WORKSP				;STACK OVERFLOW HANDLER
+                        ;	MOV	@2*14+XOPWP,R2
+                        ;	WRITE	@MESS04
+                        ;	BL	@HEXOUTX
+                        ;	B	@INIT2
+  F156   C68E           XOP0AA	MOV	R14,*R10			;PUSH RETURN ADDRESS ON STACK
+  F158   C38B           	MOV	R11,R14
+  F15A   0380           	RTWP
+                        ;
+                        ; XOP1 - RET
+                        ;
+                        ; SUBROUTINE RETURN MECHANISM
+                        ;
+  F15C   C3BA           XOP1	MOV	*R10+,R14
+  F15E   0380           	RTWP
+                        ;
+                        ; XOP2
+                        ;
+                        ; TERMINAL INPUT (READ) EXTENDED OPERATION
+                        ;
+  F160   020C 0080      XOP2	LI	R12,CRUBASE		;SET CRU BASE ADDRESS
+  F164   1F15           XOP2AA	TB	21			;RECEIVE BUFFER REG. FULL?
+  F166   16FE           	JNE	XOP2AA			;NO SO WAIT FOR RBRL = 1
+  F168   3600           	STCR	R0,8			;INPUT CHAR
+  F16A   1E12           	SBZ	18			;RESET RBRL
+  F16C   D6C0           	MOVB	R0,*R11			;MOVE BYTE INTO EFFECTIVE ADDRESS
+  F16E   0380           	RTWP
+                        ;
+                        ;--convert to upper case
+                        ;
+  F170   D01B           TOUPPER	MOVB	*R11,R0
+  F172   0980           	SRL	R0,8
+  F174   0280 0061      	CI	R0,61H
+  F178   1A07           	JL	XOP2BB
+  F17A   0280 007A      	CI	R0,7AH
+  F17E   1B04           	JH	XOP2BB
+  F180   0220 FFE0      	AI	R0,-20H
+  F184   06C0           	SWPB	R0
+  F186   D6C0           	MOVB	R0,*R11
+  F188   0380           XOP2BB	RTWP
+                        ;
+                        ; XOP3 WRITE RX
+                        ;
+                        ; TERMINAL OUTPUT (WRITE) EXTENDED OPERATION
+                        ; USES R0
+                        ;
+  F18A   020C 0080      XOP3	LI	R12,CRUBASE		;SET CRU BASE ADDRESS
+  F18E   1D10           	SBO	16			;SET RTS ON
+  F190   1F16           XOP3A	TB	22 			;TRANSMIT BUFFER REG. EMPTY?
+  F192   16FE           	JNE	XOP3A			;NO, SO WAIT UNTIL IT IS
+  F194   D01B           	MOVB	*R11,R0			;CONTINUE UNTIL BYTE 0 IS REACHED
+  F196   1302           	JEQ	XOP3B
+  F198   323B           	LDCR	*R11+,8
+  F19A   10FA           	JMP	XOP3A
+  F19C   1E10           XOP3B	SBZ	16			;RESET RTSON I.E. TURN OFF TRANSMITTER
+  F19E   0380           	RTWP
+                        ;
+                        ; XOP4 - PUSHREG RX
+                        ;
+                        ; PUSHES R0-RX ONTO STACK		  
+                        ;
+  F1A0   C04D           XOP4	MOV	R13,R1
+  F1A2   064A           XOP4AA	DECT	R10
+                        ;	C	R10,R9			;CHECK FOR STACK OVERFLOW
+                        ;	JLE	XOP0XXX
+  F1A4   C6B1           	MOV	*R1+,*R10
+  F1A6   82C1           	C	R1,R11
+  F1A8   12FC           	JLE	XOP4AA
+  F1AA   0380           	RTWP
+                        ;
+                        ; XOP5 - POPREG RX
+                        ;
+                        ; POPS RX-R0 OFF STACK
+                        ;
+  F1AC   C6FA           XOP5	MOV	*R10+,*R11
+  F1AE   064B           	DECT	R11
+  F1B0   834B           	C	R11,R13
+  F1B2   14FC           	JHE	XOP5
+  F1B4   0380           	RTWP	 
+                        ;
+                        ; SUBROUTINE HEXIN
+                        ; INPUTS A HEX NO. INTO R2
+                        ; AND INSTRUCTION INTO R1
+                        ;
+                        ; USES R1,R2,R3,R4
+                        ;
+  F1B6   04C1           HEXIN	CLR	R1
+  F1B8   04C2           	CLR	R2
+  F1BA   0703           	SETO	R3			;SET FLAG
+  F1BC   2C81           HEXIN0	READ	R1			;GET CHARACTER
+  F1BE   2CC1           	WRITE	R1			;PRINT CHARACTER
+  F1C0   0204 000F      	LI	R4,15
+  F1C4   9064 F0E0      HEXIN1	CB	@HEXTAB(R4),R1
+  F1C8   1604           	JNE	HEXIN2
+  F1CA   04C3           	CLR	R3			;CLEARS FLAG
+  F1CC   0A42           	SLA	R2,4			;SHIFTS HEX DIGIT INTO R2
+  F1CE   E084           	SOC	R4,R2
+  F1D0   10F5           	JMP	HEXIN0
+  F1D2   0604           HEXIN2	DEC	R4
+  F1D4   18F7           	JOC	HEXIN1
+  F1D6   C0C3           	MOV	R3,R3			;TEST HEXIN FLAG
+  F1D8   045B           	RT
+                        ;
+                        ; SUBROUTINE HEXOUT				;OUTPUT CONTENTS OF R2
+                        ; USES R0,R1,R2,R3
+                        ;
+  F1DA   2CE0 F0C0      HEXOUT	WRITE	@MESS03+7			;PRINTS " "
+  F1DE   2D03           HEXOUT0	PUSHREG	R3				;SAVE R0-R3
+  F1E0   04C0           HEXOUTX	CLR	R0
+  F1E2   0203 0004      	LI	R3,4
+  F1E6   0BC2           HEXOUT1	SRC	R2,12
+  F1E8   C042           	MOV	R2,R1
+  F1EA   0241 000F      	ANDI	R1,000FH
+  F1EE   D021 F0E0      	MOVB	@HEXTAB(R1),R0
+  F1F2   2CC0           	WRITE	R0
+  F1F4   0603           	DEC	R3
+  F1F6   16F7           	JNE	HEXOUT1
+  F1F8   2D43           	POPREG	R3				;RESTORE R3-R0
+  F1FA   045B           	RT
+                        ;
+                        ; INSTRUCTION ' '
+                        ;
+  F1FC   1601           OPEN	JNE	OPEN00				;JNE ON HEXIN FLAG
+  F1FE   C382           	MOV	R2,R14
+  F200   024E FFFE      OPEN00	ANDI	R14,0FFFEH			;MAKE ADDRESS EVEN
+  F204   2C20 F22A      OPEN01	CALL	@PADDRC				;PRINT ADDRESS AND CONTENTS
+  F208   06A0 F1B6      	BL	@HEXIN
+  F20C   1602           	JNE	OPEN02				;JNE ON HEXIN FLAG
+  F20E   03A0           	WREN
+  F210   C782           	MOV	R2,*R14
+  F212   0281 2000      OPEN02	CI	R1,' '*256 			;LAST CHARACTER=" "?
+  F216   1602           	JNE	OPEN03
+  F218   05CE           	INCT 	R14
+  F21A   10F4           	JMP	OPEN01
+  F21C   0281 2D00      OPEN03	CI	R1,'-'*256 			;LAST CHARACTER="-"?
+  F220   1602           	JNE	MON00A
+  F222   064E           	DECT	R14
+  F224   10EF           	JMP	OPEN01
+  F226   0460 F054      MON00A	B	@PROMPT
+                        ;
+                        ; PRINT ADDRESS IN R14
+                        ;
+  F22A   2CE0 F0BA      PADDRC	WRITE	@MESS03+1			;PRINT INDENTATION
+  F22E   C08E           	MOV	R14,R2				;PRINT ADDRESS
+  F230   06A0 F1DE      	BL	@HEXOUT0
+  F234   C09E           	MOV	*R14,R2				;PRINT CONTENTS OF ADDRESS
+  F236   06A0 F1DA      	BL	@HEXOUT
+  F23A   2CE0 F0BF      	WRITE	@MESS03+6			;PRINT "  "
+  F23E   2C40           	RET					;RETURN
+                        ;
+                        ; INSTRUCTION /
+                        ;
+  F240   1601           CHAR	JNE	CHAR00				;JNE ON HEXIN FLAG
+  F242   C382           	MOV	R2,R14
+  F244   0203 2F00      CHAR00	LI	R3,'/'*256 
+  F248   C10E           CHAR01	MOV	R14,R4				;SET START ADDRESS
+  F24A   2C20 F22A      	CALL 	@PADDRC				;PRINT ADDRESS AND CONTENTS
+  F24E   2CC3           	XOP	R3,3				;PRINT "/"
+  F250   2C81           CHAR02	XOP	R1,2				;GET CHARACTER
+  F252   0281 0800      	CI	R1,0800H			;BACKSPACE?
+  F256   1605           	JNE	CHAR03
+  F258   8384           	C	R4,R14
+  F25A   13FA           	JEQ	CHAR02
+  F25C   2CC1           	XOP	R1,3				;PRINT BACKSPACE
+  F25E   060E           	DEC	R14
+  F260   10F7           	JMP	CHAR02
+  F262   C041           CHAR03	MOV	R1,R1				;IS CHARACTER CONTROL SHIFT &
+  F264   1303           	JEQ	CHAR04
+  F266   0281 2000      	CI	R1,' '*256
+  F26A   1ADD           	JL	MON00A			;RETURN TO MONITOR
+  F26C   03A0           CHAR04	WREN
+  F26E   DF81           	MOVB	R1,*R14+
+  F270   1602           	JNE	CHAR05
+  F272   0201 2D00      	LI	R1,'-'*256 		;UNDERSCORE
+  F276   2CC1           CHAR05	XOP	R1,3			;PRINT CHARACTER
+  F278   27A0 F14C      	CZC	@MASK32,R14
+  F27C   16E9           	JNE	CHAR02
+  F27E   2CC3           	XOP	R3,3			;PRINT "/"
+  F280   10E3           	JMP	CHAR01
+                        ;
+                        ;
+                        ; INSTANT ASSEMBLER
+                        ;
+                        ; TABLES
+                        ;
+  F282   535A 4320      TYPE1	TEXT	'SZC SZCBS   SB  C   CB  A   AB  '
+  F286   535A 4342      
+  F28A   5320 2020      
+  F28E   5342 2020      
+  F292   4320 2020      
+  F296   4342 2020      
+  F29A   4120 2020      
+  F29E   4142 2020      
+  F2A2   4D4F 5620      	TEXT	'MOV MOVBSOC SOCB'
+  F2A6   4D4F 5642      
+  F2AA   534F 4320      
+  F2AE   534F 4342      
+  F2B2   434F 4320      TYPE2	TEXT	'COC CZC XOR XOP LDCRSTCRMPY DIV '
+  F2B6   435A 4320      
+  F2BA   584F 5220      
+  F2BE   584F 5020      
+  F2C2   4C44 4352      
+  F2C6   5354 4352      
+  F2CA   4D50 5920      
+  F2CE   4449 5620      
+  F2D2   424C 5750      TYPE3	TEXT	'BLWPB   X   CLR NEG INV INC INCT'
+  F2D6   4220 2020      
+  F2DA   5820 2020      
+  F2DE   434C 5220      
+  F2E2   4E45 4720      
+  F2E6   494E 5620      
+  F2EA   494E 4320      
+  F2EE   494E 4354      
+  F2F2   4445 4320      	TEXT	'DEC DECTBL  SWPBSETOABS ILL?ILL?'
+  F2F6   4445 4354      
+  F2FA   424C 2020      
+  F2FE   5357 5042      
+  F302   5345 544F      
+  F306   4142 5320      
+  F30A   494C 4C3F      
+  F30E   494C 4C3F      
+  F312   4A4D 5020      TYPE4	TEXT	'JMP JLT JLE JEQ JHE JGE JNE JNC '
+  F316   4A4C 5420      
+  F31A   4A4C 4520      
+  F31E   4A45 5120      
+  F322   4A48 4520      
+  F326   4A47 4520      
+  F32A   4A4E 4520      
+  F32E   4A4E 4320      
+  F332   4A4F 4320      	TEXT	'JOC JNO JL  JH  JOP SBO SBZ TB  '
+  F336   4A4E 4F20      
+  F33A   4A4C 2020      
+  F33E   4A48 2020      
+  F342   4A4F 5020      
+  F346   5342 4F20      
+  F34A   5342 5A20      
+  F34E   5442 2020      
+  F352   5352 4120      TYPE5	TEXT	'SRA SRL SLA SRC '
+  F356   5352 4C20      
+  F35A   534C 4120      
+  F35E   5352 4320      
+  F362   4C49 2020      TYPE6	TEXT	'LI  AI  ANDIORI CI  '
+  F366   4149 2020      
+  F36A   414E 4449      
+  F36E   4F52 4920      
+  F372   4349 2020      
+  F376   5354 5750      TYPE7	TEXT	'STWPSTST'
+  F37A   5354 5354      
+  F37E   4C57 5049      TYPE8	TEXT	'LWPILIMI'
+  F382   4C49 4D49      
+  F386   494C 4C3F      TYPE9	TEXT	'ILL?IDLERSETRTWPWRENCKOFLREX'
+  F38A   4944 4C45      
+  F38E   5253 4554      
+  F392   5254 5750      
+  F396   5752 454E      
+  F39A   434B 4F46      
+  F39E   4C52 4558      
+  F3A2                  	EVEN
+  F3A2   F282 F2B2      TYTAB	WORD	TYPE1,TYPE2,TYPE3,TYPE4,TYPE5
+  F3A6   F2D2 F312      
+  F3AA   F352           
+  F3AC   F362 F376      	WORD	TYPE6,TYPE7,TYPE8,TYPE9,TYTAB
+  F3B0   F37E F386      
+  F3B4   F3A2           
+  F3B6   0A08 0406      TYSHIFT BYTE	10,8,4,6,6,3,3,3,3,0
+  F3BA   0603 0303      
+  F3BE   0300           
+  F3C0                  	EVEN
+  F3C0   4000 2000      TYBASE	WORD	4000H,2000H,0400H,1000H,0800H,0200H,02A0H,02E0H,0320H
+  F3C4   0400 1000      
+  F3C8   0800 0200      
+  F3CC   02A0 02E0      
+  F3D0   0320           
+  F3D2   F4AC F4C0      TYSUB	WORD	T1,T2,T3,T4,T5,T6,T7,T8,T9
+  F3D6   F4E0 F4E8      
+  F3DA   F518 F52E      
+  F3DE   F53E F548      
+  F3E2   F474           
+  F3E4   2E00           DOT	BYTE    '.',0
+  F3E6   4C4F 4144      LOADERR	TEXT	'LOAD ERROR'
+  F3EA   2045 5252      
+  F3EE   4F52           
+  F3F0   00             	BYTE	0
+  F3F1   00             	EVEN
+                        ;
+                        ; GET MNEMONIC AND PLACE IN R8,R9
+                        ;
+  F3F2   1601           INSTANT	JNE	INST00					;JNE ON HEXIN FLAG
+  F3F4   C382           	MOV	R2,R14
+  F3F6   02A0           INST00	STWP	R0
+  F3F8   0220 0010      	AI	R0,2*8					;R0->R8
+  F3FC   0208 2020      	LI	R8,'  '					;INITIALISE R8,R9
+  F400   C248           	MOV	R8,R9
+  F402   2C20 F22A      	XOP	@PADDRC,0				;PRINT ADDRESS AND CONTENTS
+  F406   2CE0 F3E4      	XOP	@DOT,3					;PRINT "."
+  F40A   04C2           	CLR	R2						;CHARACTER COUNT=0
+  F40C   2C81           INST01	XOP	R1,2					;GET CHARACTER
+  F40E   2CC1           	XOP	R1,3					;PRINT CHARACTER
+  F410   0281 4100      	CI	R1,'A'*256 				;IN ['A'..'Z'] ?
+  F414   1A08           	JL	INST02
+  F416   0281 5A00      	CI	R1,'Z'*256
+  F41A   1B05           	JH	INST02
+  F41C   DC01           	MOVB	R1,*R0+
+  F41E   0582           	INC	R2
+  F420   0282 0005      	CI	R2,5					;GET AT MOST 5 CHARACTERS
+  F424   16F3           	JNE	INST01
+  F426   2CE2 F0BC      INST02	XOP	@MESS03+3(R2),3			;PRINT REMAINING SPACES
+  F42A   0281 2000      	CI	R1,' '*256 				;CHECK LAST CHARACTER
+  F42E   1B3B           	JH	ERROR
+  F430   1A2E           	JL	INST10					;RETURN TO MONITOR
+                        ;
+                        ; SEARCH FOR MNEMONIC IN TABLE
+                        ;
+  F432   0207 F282      	LI	R7,TYPE1
+  F436   8217           INST03	C	*R7,R8
+  F438   1603           	JNE	INST04
+  F43A   8267 0002      	C	@2(R7),R9
+  F43E   1306           	JEQ	INST05
+  F440   0227 0004      INST04	AI	R7,4
+  F444   0287 F3A2      	CI	R7,TYTAB
+  F448   16F6           	JNE	INST03
+  F44A   102D           	JMP	ERROR
+                        ;
+                        ; FIND MNEMONIC TYPE AND CALCULATE BASIC OPCODE
+                        ;
+  F44C   04C4           INST05	CLR	R4						;R4:=OPTYPE
+  F44E   0203 F3A4      	LI	R3,TYTAB+2
+  F452   8CC7           INST06	C	R7,*R3+
+  F454   1A02           	JL	INST07
+  F456   0584           	INC	R4
+  F458   10FC           	JMP	INST06
+  F45A   61E3 FFFC      INST07	S	@0-4(R3),R7
+  F45E   D024 F3B6      	MOVB	@TYSHIFT(R4),R0
+  F462   0980           	SRL	R0,8
+  F464   0A07           	SLA	R7,0					;SHIFTS BY VALUE IN R0
+  F466   0A14           	SLA	R4,1
+  F468   A1E4 F3C0      	A	@TYBASE(R4),R7			;R7:=BASIC OPCODE
+  F46C   04CA           	CLR	R10						;NO OF WORDS IN INSTRUCTION
+  F46E   C024 F3D2      	MOV	@TYSUB(R4),R0
+  F472   0450           	B	*R0
+                        ;
+  F474   2C81           T9		XOP		R1,2					;GET CHARACTER
+  F476   2CC1           INST08	XOP		R1,3					;PRINT LAST CHARACTER
+  F478   02A0           		STWP	R0
+  F47A   0220 000E      		AI		R0,2*7					;R0->R7
+  F47E   03A0           INST09	WREN
+  F480   CFB0           		MOV		*R0+,*R14+
+  F482   060A           		DEC		R10
+  F484   18FC           		JOC		INST09
+  F486   0281 2000      		CI		R1,' '*256
+  F48A   1B0D           		JH 		ERROR
+  F48C   13B4           		JEQ		INST00
+  F48E   0460 F054      INST10	B		@PROMPT					;RETURN TO MONITOR
+                        ;
+  F492   0281 2C00      DELIM	CI		R1,','*256 				;CHECK CH IN [' ',',']
+  F496   1304           		JEQ		DELIM00
+  F498   0281 2000      		CI		R1,' '*256
+  F49C   1B04           		JH		ERROR
+  F49E   1AF7           		JL		INST10
+  F4A0   2CE0 F0D8      DELIM00	XOP		@COMMA,3				;PRINT ","
+  F4A4   045B           		RT
+                        ;
+  F4A6   2CE0 F0B5      ERROR	XOP		@MESS02,3				;PRINT " ??"
+  F4AA   10A5           		JMP		INST00
+                        ;
+  F4AC   06A0 F590      T1		BL		@SIX					;INSTRUCTION OF TYPE1
+  F4B0   06A0 F492      		BL		@DELIM
+  F4B4   A1C0           		A		R0,R7
+  F4B6   06A0 F590      		BL		@SIX
+  F4BA   0A60           T100	SLA		R0,6
+  F4BC   A1C0           T101	A		R0,R7
+  F4BE   10DB           		JMP		INST08
+                        ;
+  F4C0   06A0 F590      T2		BL		@SIX					;INSTRUCTION OF TYPE2
+  F4C4   06A0 F492      		BL		@DELIM
+  F4C8   A1C0           		A		R0,R7
+  F4CA   0287 2C00      		CI		R7,2C00H				;CHECK IF XOP,LDCR OR STCR
+  F4CE   1A03           		JL		T200
+  F4D0   0287 3400      		CI		R7,3400H
+  F4D4   1A02           		JL		T201
+  F4D6   2CE0 F0DE      T200	XOP		@RR,3					;PRINT "R"
+  F4DA   06A0 F556      T201	BL		@GETRC
+  F4DE   10ED           		JMP		T100
+                        ;
+  F4E0   06A0 F590      T3		BL		@SIX					;;INSTRUCTION OF TYPE3
+  F4E4   A1C0           		A		R0,R7
+  F4E6   10C7           		JMP		INST08
+                        ;
+  F4E8   2CE0 F0D6      T4		XOP		@HASH,3					;INSTRUCTION OF TYPE4
+  F4EC   06A0 F1B6      		BL		@HEXIN
+  F4F0   16C2           		JNE		INST08					;DEFAULT FOR JUMP INSTRUCTIONS
+  F4F2   0287 1D00      		CI		R7,1D00H				;IS INSTRUCTION SBO,SBZ,TB
+  F4F6   140B           		JHE		T400
+  F4F8   608E           		S		R14,R2					;CALCULATE JUMP OFFSET
+  F4FA   0642           		DECT	R2
+  F4FC   0812           		SRA		R2,1
+  F4FE   0282 FF80      		CI		R2,-128
+  F502   1178           		JLT		ERR1
+  F504   0282 007F      		CI		R2,127
+  F508   1575           		JGT		ERR1
+  F50A   0242 00FF      		ANDI	R2,0FFH
+  F50E   0282 00FF      T400	CI		R2,0FFH
+  F512   1B70           		JH		ERR1
+  F514   A1C2           		A		R2,R7
+  F516   10AF           		JMP		INST08
+                        ;
+  F518   2CE0 F0DE      T5		XOP		@RR,3					;INSTRUCTION OF TYPE5
+  F51C   06A0 F556      		BL		@GETRC
+  F520   06A0 F492      		BL		@DELIM
+  F524   A1C0           		A		R0,R7
+  F526   06A0 F556      		BL		@GETRC
+  F52A   0A40           		SLA		R0,4
+  F52C   10C7           		JMP		T101
+                        ;
+  F52E   2CE0 F0DE      T6		XOP		@RR,3					;INSTRUCTION OF TYPE 6
+  F532   06A0 F556      		BL		@GETRC
+  F536   A1C0           		A		R0,R7
+  F538   06A0 F492      		BL		@DELIM
+  F53C   1005           		JMP		T8
+                        ;
+  F53E   2CE0 F0DE      T7		XOP		@RR,3					;INSTRUCTION OF TYPE7
+  F542   06A0 F556      		BL		@GETRC
+  F546   10BA           		JMP		T101
+                        ;
+  F548   2CE0 F0D6      T8		XOP		@HASH,3					;_INSTRUCTION OF TYPE8
+  F54C   06A0 F1B6      		BL		@HEXIN
+  F550   C202           		MOV		R2,R8
+  F552   058A           		INC		R10
+  F554   1090           		JMP		INST08
+                        ;
+                        ; GETRC	OBTAINS REGISTER NO OR CONSTANT NUMBER
+                        ;
+  F556   02A6           GETRC	STWP	R6
+  F558   0226 000A      		AI		R6,2*5			;R6->R5
+  F55C   0205 2020      		LI		R5,'  '
+  F560   0202 0003      		LI		R2,3			;AT MOST 3 CHARACTERS
+  F564   2C81           GETRC00 XOP		R1,2			;GET CHARACTER
+  F566   0281 3000      		CI		R1,'0'*256 		;IN ['0'..'9'] ?
+  F56A   1A07           		JL		GETRC01
+  F56C   0281 3900      		CI		R1,'9'*256
+  F570   1B04           		JH		GETRC01
+  F572   2CC1           		XOP		R1,3			;PRINT CHARACTER
+  F574   DD81           		MOVB	R1,*R6+
+  F576   0602           		DEC		R2
+  F578   16F5           		JNE		GETRC00
+  F57A   0202 001E      GETRC01	LI		R2,2*15
+  F57E   8162 F0F0      GETRC02	C		@NUMTAB(R2),R5		;TEST IF VALID NUMBER
+  F582   1303           		JEQ		GETRC03
+  F584   0642           		DECT	R2
+  F586   18FB           		JOC		GETRC02
+  F588   1035           		JMP		ERR1
+  F58A   0912           GETRC03	SRL		R2,1
+  F58C   C002           		MOV		R2,R0			;R0:=HEX EQUIVALENT OF DECIMAL NUMBER
+  F58E   045B           		RT
+                        ;
+                        ; SIX
+                        ;
+  F590   C30B           SIX		MOV		R11,R12			;SAVE RETURN ADDRESS
+  F592   2C81           		XOP		R1,2			;GET CHARACTER
+  F594   2CC1           		XOP		R1,3			;PRINT CHARACTER
+  F596   0281 5200      		CI		R1,'R'*256 		;REGISTER ADDRESSING MODE
+  F59A   1603           		JNE		SIX00
+  F59C   06A0 F556      		BL		@GETRC
+  F5A0   045C           		B		*R12			;RETURN
+  F5A2   0281 2A00      SIX00	CI		R1,'*'*256			;INDIRECT ADDRESSING MODE
+  F5A6   160E           		JNE		SIX03
+  F5A8   2CE0 F0DE      		XOP		@RR,3			;PRINT "R"
+  F5AC   06A0 F556      		BL		@GETRC
+  F5B0   0220 0010      		AI		R0,10H			;AMODE:=1
+  F5B4   0281 2B00      		CI		R1,'+'*256 		;AUTO INCREMENT REGISTER MODE
+  F5B8   1604           		JNE		SIX02
+  F5BA   2CC1           		XOP		R1,3			;PRINT "+"
+  F5BC   0220 0020      		AI		R0,20H			;AMODE:=3
+  F5C0   2C81           		XOP		R1,2			;GET CHARACTER
+  F5C2   045C           SIX02	B		*R12			;RETURN
+  F5C4   0281 4000      SIX03	CI		R1,'@'*256		;SYMBOLIC ADDRESSING MODE
+  F5C8   1615           		JNE		ERR1
+  F5CA   2CE0 F0D6      		XOP		@HASH,3			;PRINT "#"
+  F5CE   06A0 F1B6      		BL		@HEXIN
+  F5D2   C28A           		MOV		R10,R10			;TEST R10
+  F5D4   1602           		JNE		SIX04
+  F5D6   C202           		MOV		R2,R8
+  F5D8   1001           		JMP		SIX05
+  F5DA   C242           SIX04	MOV		R2,R9
+  F5DC   058A           SIX05	INC		R10
+  F5DE   04C0           		CLR		R0
+  F5E0   0281 2800      		CI		R1,'('*256		;INDEXED ADDRESSING MODE
+  F5E4   160B           		JNE		SIX07
+  F5E6   2CE0 F0DE      		XOP		@RR,3			;PRINT "R"
+  F5EA   06A0 F556      		BL		@GETRC
+  F5EE   0281 2900      		CI		R1,')'*256
+  F5F2   1302           		JEQ		SIX06
+  F5F4   0460 F4A6      ERR1	B		@ERROR
+  F5F8   2CC1           SIX06	XOP		R1,3			;PRINT ")"
+  F5FA   2C81           		XOP		R1,2			;GET CHARACTER
+  F5FC   0220 0020      SIX07	AI		R0,20H			;AMODE:=2
+  F600   045C           		B		*R12
+                        ;
+                        ;
+                        ; INSTRUCTION H
+                        ;
+  F602   0D0A 0A        SMESS0	BYTE	CR,LF,LF
+  F605   2020 2020      		TEXT	'     BP '
+  F609   2042 5020      
+  F60D   00             		BYTE	0
+  F60E   2053 4554      SMESS1	TEXT	' SET AT'
+  F612   2041 54        
+  F615   00             		BYTE 	0
+  F616                  		EVEN
+  F616   0205 EFE0      SETBP	LI		R5,INT3WP
+  F61A   0225 0008      		AI		R5,2*4			;R5->BP 1 (R4,R5,R6,R7)
+  F61E   0208 3100      		LI		R8,'1'*256
+  F622   2CE0 F602      SETBP00 XOP		@SMESS0,3		;PRINT "     BP "
+  F626   2CC8           		XOP		R8,3			;PRINT BP NO.
+  F628   2CE0 F60E      		XOP		@SMESS1,3		;PRINT "SET AT"
+  F62C   C0B5           		MOV		*R5+,R2			;PRINT CONTENTS
+  F62E   06A0 F1DA      		BL		@HEXOUT
+  F632   2CE0 F0BF      		XOP		@MESS03+6,3		;PRINT " "
+  F636   06A0 F1B6      		BL		@HEXIN			;GET NEW CONTENTS(IF REQUIRED)
+  F63A   1602           		JNE		SETBP01			;JNE ON HEXIN FLAG
+  F63C   C942 FFFE      		MOV		R2,@0-2(R5)
+  F640   0281 2000      SETBP01	CI		R1,' '*256
+  F644   1605           		JNE		SETBP02
+  F646   0228 0100      		AI		R8,100H
+  F64A   0288 3500      		CI		R8,'5'*256
+  F64E   16E9           		JNE		SETBP00
+  F650   0460 F054      SETBP02	B		@PROMPT
+                        ;
+                        ; INSTRUCTION T
+                        ;
+  F654   0204 0020      TRACE 	LI		R4,20H
+  F658   C804 EFF2      		MOV		R4,@2*9+INT3WP
+  F65C   04C4           		CLR		R4
+  F65E   1005           		JMP		SETUP
+                        ;
+                        ; INSTRUCTION X
+                        ;
+  F660   0204 0002      XCUTE	LI		R4,2
+  F664   1002           		JMP		SETUP
+                        ;
+                        ; INSTRUCTION S
+                        ;
+  F666   0204 0004      STEP	LI		R4,4
+                        ;
+  F66A   0360           SETUP	RSET					;DISABLE INTERRUPTS
+  F66C   C804 EFF4      		MOV		R4,@2*10+INT3WP
+  F670   C0C3           		MOV		R3,R3			;TEST HEXIN FLAG
+  F672   1602           		JNE		SETUP00
+  F674   C802 EFFC      		MOV		R2,@2*14+INT3WP	;SET UP NEW START ADDRESS
+  F678   02E0 EFE0      SETUP00	LWPI	INT3WP			;CHANGE WORKSPACE
+  F67C   C30E           		MOV		R14,R12			;ADDRESS OF NEXT INSTRUCTION
+  F67E   27E0 F14E      		CZC		@MASK16,R15		;CHECK TO SEE IN R15 ALLOWS INTERRUPTS
+  F682   1602           		JNE		SETUP01
+  F684   022F 0003      		AI		R15,3			;IF NOT ALLOW LEVEL 3 AND ABOVE
+  F688   03E0           SETUP01	TRON					;TURN TRACE LOGIC ON
+  F68A   0380           		RTWP					;RETURN TO PROGRAM BEING TRACED
+                        ;
+                        ; INTERRUPT 3 HANDLER
+                        ;
+  F68C   F6AE F6D8      I3TAB	WORD	INT3AA,INT3CC,INT3GG	;TRACE,XCUTE,STEP
+  F690   F71E           
+  F692   3D3E           IMESS0	TEXT	'=>'
+  F694   00             		BYTE	0
+  F695   2020 5750      IMESS1	TEXT	'  WP='
+  F699   3D             
+  F69A   00             		BYTE	0
+  F69B   2020           IMESS2	BYTE	20H,20H			;CONTROL CHARACTERS TO POSITION CURSER
+  F69D   2020 5354      IMESS3	TEXT	'  ST='
+  F6A1   3D             
+  F6A2   00             		BYTE	0		
+  F6A3   00             		EVEN
+  F6A4   0380           INT3	RTWP
+  F6A6   03C0           	TROF	;RESETTRACE LOGIC
+  F6A8   C02A F68C      	MOV	@I3TAB(R10),R0		;JUMP TO APPROPRIATE HANDLER
+  F6AC   0450           	B	*R0
+                        ;
+  F6AE   2660 F150      INT3AA	CZC		@MASK8,R9
+  F6B2   1602           		JNE		INT3BB
+  F6B4   2CE0 F0BA      		XOP		@MESS03+1,3		;PRINT INDENTATION
+  F6B8   C08C           INT3BB	MOV		R12,R2			;PRINT ADDRESS OF LAST INST.
+  F6BA   06A0 F1DE      		BL		@HEXOUT0
+  F6BE   2CE0 F692      		XOP		@IMESS0,3		;PRINT "=>"
+  F6C2   0609           		DEC		R9
+  F6C4   1609           		JNE		INT3CC
+  F6C6   04C1           		CLR		R1
+  F6C8   2CE0 F0B7      		XOP		@MESS02+2,3		;PRINT "?"
+  F6CC   2C81           		XOP		R1,2			;GET CHARACTER
+  F6CE   0281 2000      		CI		R1,' '*256	
+  F6D2   1621           		JNE		INT3FF
+  F6D4   0209 0020      		LI		R9,20H
+                        ;
+                        ; SEARCH BREAKPOINT TABLE
+                        ;
+  F6D8   0380           INT3CC	RTWP
+  F6DA   0202 0004      	LI	R2,4
+  F6DE   02A0           	STWP	R0
+  F6E0   0220 0008      	AI	R0,2*4			;R0->BP 1
+  F6E4   8330           INT3DD	C	*R0+,R12		;IS INSTRUCTION BREAKPOINTED?
+  F6E6   1305           	JEQ	INT3EE
+  F6E8   0602           	DEC	R2
+  F6EA   16FC           	JNE	INT3DD
+  F6EC   C30E           	MOV	R14,R12			;R12:=ADDRESS OF NEXT INSTRUCTION
+  F6EE   03E0           	TRON				;TURN TRACE LOGIC ON
+  F6F0   0380           	RTWP				;RETURN TO USER PROGRAM
+                        ;
+  F6F2   0380           INT3EE	RTWP
+  F6F4   2CE0 F602      	XOP		@SMESS0,3		;PRINT INDENTATION+"   BP"
+  F6F8   2CE0 F613      		XOP		@SMESS1+5,3		;PRINT "AT"
+  F6FC   C08C           		MOV		R12,R2
+  F6FE   06A0 F1DA      		BL		@HEXOUT
+  F702   2CE0 F695      		XOP		@IMESS1,3		;RINT "WP="
+  F706   C08D           		MOV		R13,R2			;RINT USER WORKSPACE
+  F708   06A0 F1DE      		BL		@HEXOUT0
+  F70C   2CE0 F69D      		XOP		@IMESS3,3		;RINT "ST="
+  F710   C08F           		MOV		R15,R2			;RINT USER STATUS
+  F712   06A0 F1DE      		BL		@HEXOUT0
+  F716   02E0 EFA0      INT3FF	LWPI	WORKSP
+  F71A   0460 F054      		B		@PROMPT
+                        ;
+  F71E   2D0B           INT3GG	XOP		R11,4			;SAVE	R0-R11
+  F720   2C20 F7FA      		XOP		@DISASM,0
+  F724   2D4B           		XOP		R11,5			;RESTORE R0-R11
+  F726   2CE0 F69B      		XOP		@IMESS2,3		;PRINT "ST="
+  F72A   C08F           		MOV		R15,R2			;PRINT STATUS
+  F72C   06A0 F1DE      		BL		@HEXOUT0
+  F730   10F2           		JMP		INT3FF			;RETURN TO MONITOR
+                        ;
+                        ; INSTRUCTION PRINT OUT REGISTERS
+                        ;
+  F732   0204 EFFA      REGIST	LI	R4,2*13+INT3WP
+  F736   C114           	MOV	*R4,R4			;R4:=USER WORKSPACE BY DEFAULT
+  F738   C0C3           	MOV	R3,R3			;TEST HEXIN FLAG
+  F73A   1601           	JNE	REGIST0
+  F73C   C102           	MOV	R2,R4
+  F73E   0244 FFFE      REGIST0 ANDI	R4,0FFFEH		;MAKE ADDRESS EVEN	
+  F742   2CE0 F0B9      	XOP	@MESS03,3		;PRINT INDENTATION
+  F746   2CE0 F697      	XOP	@IMESS1+2,3		;PRINT "WP="
+  F74A   C084           	MOV	R4,R2			;PRINT WORKSPACE ADDRESS
+  F74C   06A0 F1DE      	BL	@HEXOUT0
+  F750   04C5           	CLR	R5
+  F752   04CA           	CLR	R10
+  F754   0209 0D0A      REGIST1	LI	R9,0D0AH
+  F758   2CC9           	XOP	R9,3			;PRINT CR,LF
+  F75A   2CE0 F0DA      REGIST2	XOP	@R,3			;PRINT "R"
+  F75E   C265 F0F0      	MOV	@NUMTAB(R5),R9
+  F762   2CC9           	XOP	R9,3			;PRINT REGISTER NO
+  F764   0209 203D      	LI	R9,' ='
+  F768   2CC9           	XOP	R9,3
+  F76A   C0B4           	MOV	*R4+,R2			;PRINT REGISTER CONTENTS
+  F76C   06A0 F1DA      	BL	@HEXOUT
+  F770   05C5           	INCT	R5
+  F772   0285 0020      	CI	R5,20H
+  F776   1317           	JEQ	MON00B
+  F778   2560 F152      	CZC	@MASK3,R5
+  F77C   13EB           	JEQ	REGIST1
+  F77E   10ED           	JMP	REGIST2
+                        ;
+                        ; INSTRUCTION P
+                        ;
+  F780   C30F           PRINT	MOV	R15,R12			;DEFAULT ACTION
+  F782   C0C3           	MOV		R3,R3			;TEST HEXIN FLAG
+  F784   1601           	JNE		PRINT00
+  F786   C302           	MOV		R2,R12
+  F788   024C FFFE      PRINT00	ANDI	R12,0FFFEH
+  F78C   020D 0010      		LI		R13,16			;INSTRUCTION COUNT
+  F790   2C20 F7FA      PRINT01	XOP		@DISASM,0		;CALL DISASSEMBLER
+  F794   060D           		DEC		R13			;DECREMENT INSTRUCTION COUNT
+  F796   16FC           		JNE		PRINT01
+  F798   058D           		INC		R13
+  F79A   2C81           		XOP		R1,2			;GET CHARACTER
+  F79C   020D 0008      		LI		R13,8			;PRIME FOR 8 MORE LINES 
+  F7A0   0281 2000      		CI		R1,' '*256 		;MORE INSTRUCTIONS TO BE DISASSEMBLED ?
+  F7A4   13F5           		JEQ		PRINT01
+  F7A6   0460 F054      MON00B	B	@PROMPT
+                        ;
+                        ; DISASSEMBLER
+                        ;
+                        ; TABLES
+                        ;
+  F7AA   F890 F890      C0ATAB	WORD	CODE00,CODE00,CODE02,CODE02,CODE04,CODE04,CODE04,CODE04
+  F7AE   F89A F89A      
+  F7B2   F8B4 F8B4      
+  F7B6   F8B4 F8B4      
+  F7BA   F8D0 F8D0      		WORD	CODE08,CODE08,CODE08,CODE08,CODE00,CODE00,CODE00,CODE00
+  F7BE   F8D0 F8D0      
+  F7C2   F890 F890      
+  F7C6   F890 F890      
+  F7CA   F8F8 F8F8      C2ATAB	WORD	DSIX,DSIX,DSIX,KSIX,KSIX,KSIX,DSIX,DSIX
+  F7CE   F8F8 F90A      
+  F7D2   F90A F90A      
+  F7D6   F8F8 F8F8      
+  F7DA   F916 F916      C02ATAB WORD	IMMR,IMMR,IMMR,IMMR,IMMR,ONER,ONER,IMM
+  F7DE   F916 F916      
+  F7E2   F916 F92C      
+  F7E6   F92C F920      
+  F7EA   F920 F85A      		WORD	IMM,DISASM2,DISASM2,DISASM2,DISASM2,DISASM2,DISASM2,DISASM2
+  F7EE   F85A F85A      
+  F7F2   F85A F85A      
+  F7F6   F85A F85A      
+                        ;
+  F7FA   2CE0 F0BA      DISASM	XOP		@MESS03+1,3		;PRINT INDENTATION
+  F7FE   C08C           		MOV		R12,R2			;PRINT ADDRESS
+  F800   06A0 F1DE      		BL		@HEXOUT0
+  F804   C17C           		MOV		*R12+,R5		;R5:=OPCODE
+  F806   C085           		MOV		R5,R2			;PRINT OPCODE
+  F808   06A0 F1DA      		BL		@HEXOUT
+  F80C   C185           		MOV		R5,R6
+  F80E   09C6           		SRL		R6,12
+  F810   1605           		JNE		DISASM1
+  F812   C185           		MOV		R5,R6
+  F814   0976           		SRL		R6,7
+  F816   C026 F7AA      		MOV		@C0ATAB(R6),R0
+  F81A   0450           		B		*R0
+  F81C   0286 0003      DISASM1 CI	R6,3
+  F820   1B2A           	JH	CODE4
+  F822   0286 0002      	CI	R6,2
+  F826   141A           	JHE	CODE2
+                        ;
+  F828   C005           	MOV	R5,R0
+  F82A   0240 0F00      	ANDI	R0,0F00H
+  F82E   0960           	SRL	R0,6
+  F830   0220 F312      	AI	R0,TYPE4
+  F834   06A0 F9AC      	BL	@PMNEM
+  F838   C085           	MOV	R5,R2
+  F83A   0242 00FF      	ANDI	R2,0FFH
+  F83E   0285 1D00      	CI	R5,1D00H
+  F842   1407           	JHE	CODE100
+  F844   0282 0080      	CI	R2,80H
+  F848   1A02           	JL	CODE101
+  F84A   0262 FF00      	ORI	R2,0FF00H
+  F84E   0A12           CODE101	SLA	R2,1
+  F850   A08C           	A	R12,R2
+  F852   2CE0 F0D6      CODE100 XOP	@HASH,3			;PRINT "#"
+  F856   06A0 F1DE      	BL	@HEXOUT0
+  F85A   2C40           DISASM2 XOP	R0,1			;RETURN
+                        ;
+  F85C   C185           CODE2	MOV	R5,R6
+  F85E   0246 1C00      	ANDI	R6,1C00H
+  F862   0986           	SRL	R6,8
+  F864   C006           	MOV	R6,R0
+  F866   0220 F2B2      	AI	R0,TYPE2
+  F86A   06A0 F9AC      	BL	@PMNEM
+  F86E   0916           	SRL	R6,1
+  F870   C026 F7CA      	MOV	@C2ATAB(R6,R0
+  F874   0450           	B	*R0
+                        ;
+  F876   0A26           CODE4	SLA	R6,2
+  F878   C006           	MOV	R6,R0
+  F87A   0220 F272      	AI	R0,TYPE1-16
+  F87E   06A0 F9AC      	BL	@PMNEM
+  F882   2C20 F950      	XOP	@SIXBITS,0
+  F886   2CE0 F0D8      	XOP	@COMMA,3		;PRINT ","
+  F88A   2C20 F954      	XOP	@SIXBITD,0
+  F88E   2C40           	XOP	R0,1			;RETURN
+                        ;
+  F890   0200 F386      CODE00	LI	R0,TYPE9
+  F894   06A0 F9AC      	BL	@PMNEM
+  F898   2C40           	XOP	R0,1			;RETURN
+                        ;
+  F89A   C185           CODE02	MOV	R5,R6
+  F89C   0246 01E0      	ANDI	R6,01E0H
+  F8A0   0936           	SRL	R6,3
+  F8A2   C006           	MOV	R6,R0
+  F8A4   0220 F362      	AI	R0,TYPE6
+  F8A8   06A0 F9AC      	BL	@PMNEM
+  F8AC   0916           	SRL	R6,1
+  F8AE   C026 F7DA      	MOV	@C02ATAB(R6),R0
+  F8B2   0450           	B	*R0
+                        ;
+  F8B4   C005           CODE04	MOV	R5,R0
+  F8B6   0240 03C0      	ANDI	R0,03C0H
+  F8BA   0940           	SRL	R0,4
+  F8BC   0220 F2D2      	AI	R0,TYPE3
+  F8C0   06A0 F9AC      	BL	@PMNEM	
+  F8C4   0285 07C0      	CI	R5,07C0H
+  F8C8   1402           	JHE	CODE040
+  F8CA   2C20 F950      	XOP	@SIXBITS,0
+  F8CE   2C40           CODE040 XOP	R0,1			;RETURN
+                        ;
+  F8D0   C005           CODE08	MOV	R5,R0
+  F8D2   0240 0300      	ANDI	R0,0300H
+  F8D6   0960           	SRL	R0,6
+  F8D8   0220 F352      	AI	R0,TYPE5
+  F8DC   06A0 F9AC      	BL	@PMNEM
+  F8E0   C185           	MOV	R5,R6
+  F8E2   2C20 F934      	XOP	@REG,0
+  F8E6   2CE0 F0D8      	XOP	@COMMA,3		;PRINT ","
+  F8EA   0935           	SRL	R5,3
+  F8EC   0245 001F      CFIELD  ANDI	R5,1FH			;PRINTS CONSTANT FIELD
+  F8F0   C265 F0F0      	MOV	@NUMTAB(R5),R9
+  F8F4   2CC9           	XOP	R9,3
+  F8F6   2C40           	XOP	R0,1			;RETURN
+                        ;
+  F8F8   2C20 F950      DSIX	XOP	@SIXBITS,0		;PRINTS SIXBIT FIELD + REGISTER
+  F8FC   2CE0 F0D8      	XOP	@COMMA,3		;PRINT ","
+  F900   C185           	MOV	R5,R6
+  F902   0966           	SRL	R6,6
+  F904   2C20 F934      	XOP	@REG,0
+  F908   2C40           	XOP	R0,1			;RETURN
+                        ;
+  F90A   2C20 F950      KSIX	XOP	@SIXBITS,0		;PRINTS SIXBIT FIELD + CONSTANT
+  F90E   2CE0 F0D8      	XOP	@COMMA,3		;PRINT ","
+  F912   0955           	SRL	R5,5
+  F914   10EB           	JMP	CFIELD
+                        ;
+                        ;
+                        ;
+  F916   C185           IMMR	MOV	R5,R6			;PRINTS REGISTER NO. + IMMEDIATE OPERAND
+  F918   2C20 F934      	XOP	@REG,0
+  F91C   2CE0 F0D8      	XOP	@COMMA,3		;PRINT ","
+  F920   2CE0 F0D6      IMM	XOP	@HASH,3			;PRINT "#"
+  F924   C0BC           	MOV	*R12+,R2
+  F926   06A0 F1DE      	BL	@HEXOUT0
+  F92A   2C40           	XOP	R0,1			;RETURN
+                        ;
+  F92C   C185           ONER	MOV	R5,R6			;PRINTS REGISTER
+  F92E   2C20 F934      	XOP	@REG,0
+  F932   2C40           	XOP	R0,1			;RETURN
+                        ;
+  F934   0246 000F      REG	ANDI	R6,0FH		;PRINTS REGISTER NO. E.G. R1,R10
+  F938   0A16           	SLA	R6,1
+  F93A   2CE0 F0DE      	XOP	@RR,3			;PRINT "R"
+  F93E   C266 F0F0      	MOV	@NUMTAB(R6),R9
+  F942   0286 0014      	CI	R6,14H
+  F946   1402           	JHE	REG00
+  F948   0249 FF00      	ANDI	R9,0FF00H
+  F94C   2CC9           REG00	XOP	R9,3
+  F94E   2C40           	XOP	R0,1			;RETURN
+                        ;
+  F950   C185           SIXBITS	MOV	R5,R6			;DECODES AND PRINTS SIXBIT SOURCE FIELD
+  F952   1002           	JMP	SIXBIT
+  F954   C185           SIXBITD	MOV	R5,R6			;DECODES AND PRINTS SIXBIT DEST. FIELD
+  F956   0966           	SRL	R6,6
+  F958   0246 003F      SIXBIT	ANDI	R6,3FH			;R6:=SIXBIT FIELD
+  F95C   C1C6           	MOV	R6,R7			
+  F95E   0246 000F      	ANDI	R6,0FH			;R6:=REGISTER
+  F962   0947           	SRL	R7,4			;R7:=ADDRESSING MODE
+  F964   1603           	JNE	SIXBIT0
+  F966   2C20 F934      	XOP	@REG,0			;REGISTER ADDRESSING MODE
+  F96A   101F           	JMP	SIXBIT3
+  F96C   0287 0002      SIXBIT0	CI	R7,2			;SYMBOLIC ADDRESSING MODE
+  F970   1611           	JNE	SIXBIT2
+  F972   2CE0 F0D5      	XOP	@ATHASH,3		;PRINT "@#"
+  F976   C0BC           	MOV	*R12+,R2		
+  F978   06A0 F1DE      	BL	@HEXOUT0
+  F97C   0286 0000      	CI	R6,0			;INDEXED ADDRESSING MODE
+  F980   1314           	JEQ	SIXBIT3
+  F982   0201 2800      	LI	R1,'('*256 		;PRINT "("
+  F986   2CC1           	XOP	R1,3
+  F988   2C20 F934      	XOP 	@REG,0
+  F98C   0201 2900      	LI	R1,')'*256
+  F990   2CC1           	XOP	R1,3			;PRINT ")"
+  F992   100B           	JMP	SIXBIT3
+  F994   0201 2A00      SIXBIT2 LI	R1,'*'*256		;INDIRECT REGISTER ADDRESSING MODE
+  F998   2CC1           	XOP	R1,3
+  F99A   2C20 F934      	XOP	@REG,0
+  F99E   0287 0003      	CI	R7,3
+  F9A2   1603           	JNE	SIXBIT3
+  F9A4   0201 2B00      	LI	R1,'+'*256 		;AUTO INCREMENT ADDRESSING MODEBT
+  F9A8   2CC1           	XOP	R1,3
+  F9AA   2C40           SIXBIT3	XOP	R0,1			;RETURN
+                        ;
+  F9AC   2CE0 F0BF      PMNEM	XOP	@MESS03+6,3		;SUBROUTINE TO PRINT OPCODE MNEMONIC
+  F9B0   04CA           	CLR	R10
+  F9B2   C230           	MOV	*R0+,R8
+  F9B4   C250           	MOV	*R0,R9
+  F9B6   2CC8           	XOP	R8,3
+  F9B8   2CE0 F0C0      	XOP	@MESS03+7,3		;PRINT " "
+  F9BC   045B           	RT
+                        ;
+                        ; INSTRUCTION M
+                        ;
+  F9BE   4F56 4520      MMESS0	TEXT	'OVE BYTES '
+  F9C2   4259 5445      
+  F9C6   5320           
+  F9C8   00             	BYTE	0
+  F9C9   544F 20        MMESS1	TEXT	'TO '
+  F9CC   00             	BYTE	0
+  F9CD   5945 5320      MMESS2	TEXT	'YES OR NO? '
+  F9D1   4F52 204E      
+  F9D5   4F3F 20        
+  F9D8   00             	BYTE	0
+  F9D9   00             	EVEN
+  F9DA   2CE0 F9BE      MOVE	XOP	@MMESS0,3		;PRINT "OVE BYTES "
+  F9DE   06A0 F1B6      	BL	@HEXIN
+  F9E2   162B           	JNE	MOVE04			;JNE ON HEXIN FLAG
+  F9E4   C202           	MOV	R2,R8			;R8:=LOW ADDRESS
+  F9E6   0281 3A00      	CI	R1,':'*256
+  F9EA   1627           	JNE	MOVE04			;ERROR
+  F9EC   06A0 F1B6      	BL	@HEXIN
+  F9F0   1624           	JNE	MOVE04			;JNE ON HEXIN FLAG
+  F9F2   8088           	C	R8,R2
+  F9F4   1B22           	JH	MOVE04
+  F9F6   C1C2           	MOV	R2,R7			;R7:=HIGH ADDRESS
+  F9F8   2CE0 F9C9      	XOP	@MMESS1,3		;PRINT " TO"
+  F9FC   06A0 F1B6      	BL	@HEXIN
+  FA00   161C           	JNE	MOVE04			;JNE ON HEXIN FLAG
+  FA02   C182           	MOV	R2,R6			
+  FA04   2CE0 F0B9      	XOP	@MESS03,3		;PRINT INDENTATION
+  FA08   2CE0 F9CD      	XOP	@MMESS2,3		;PRINT "YES OR NO?"
+  FA0C   2C81           	XOP	R1,2			;GET CHARACTER
+  FA0E   2CC1           	XOP	R1,3			;PRINT CHARACTER
+  FA10   0281 5900      	CI	R1,'Y'*256
+  FA14   1610           	JNE	MON00C			;RETURN TO MONITOR
+  FA16   8206           	C	R6,R8
+  FA18   130E           	JEQ	MON00C			;LOW=DESTINATION
+  FA1A   1B04           	JH	MOVE01
+  FA1C   DDB8           MOVE00	MOVB	*R8+,*R6+		
+  FA1E   81C8           	C	R8,R7
+  FA20   1B0A           	JH	MON00C			;RETURN TO MONITOR
+  FA22   10FC           	JMP	MOVE00
+  FA24   81C6           MOVE01	C	R6,R7
+  FA26   1BFA           	JH	MOVE00
+  FA28   6188           	S	R8,R6
+  FA2A   A187           	A	R7,R6
+  FA2C   D597           MOVE02	MOVB	*R7,*R6
+  FA2E   0607           	DEC	R7
+  FA30   0606           	DEC	R6
+  FA32   8207           	C	R7,R8
+  FA34   14FB           	JHE	MOVE02
+  FA36   0460 F054      MON00C	B	@PROMPT
+  FA3A   0460 F06A      MOVE04	B	@MON02			;PRINTS " ??"
+                        ;
+                        ; INSTRUCTION Z
+                        ;
+  FA3E   4E4F 5420      FMESS00	TEXT	'NOT FOUND'
+  FA42   464F 554E      
+  FA46   44             
+  FA47   00             	BYTE	0
+  FA48                  	EVEN
+  FA48   C24F           FIND	MOV	R15,R9
+  FA4A   C1C2           	MOV	R2,R7
+  FA4C   91F9           FIND00	CB	*R9+,R7
+  FA4E   1604           	JNE	FIND01
+  FA50   06C7           	SWPB	R7
+  FA52   91D9           	CB	*R9,R7
+  FA54   06C7           	SWPB	R7
+  FA56   1307           	JEQ	FIND02
+  FA58   83C9           FIND01	C	R9,R15
+  FA5A   16F8           	JNE	FIND00
+  FA5C   2CE0 F0B9      	XOP	@MESS03,3		;PRINT INDENTATION
+  FA60   2CE0 FA3E      	XOP	@FMESS00,3		;PRINT "NOT FOUND"
+  FA64   10E8           	JMP	MON00C
+  FA66   2CE0 F0B9      FIND02	XOP	@MESS03,3		;PRINT INDENTATION
+  FA6A   C089           	MOV	R9,R2
+  FA6C   0602           	DEC	R2
+  FA6E   06A0 F1DE      	BL	@HEXOUT0		;PRINT ADDRESS
+  FA72   C087           	MOV	R7,R2
+  FA74   06A0 F1DA      	BL	@HEXOUT			;PRINT CONTENTS
+  FA78   2CE0 F0BF      	XOP	@MESS03+6,3		;PRINT "  "
+  FA7C   06A0 F1B6      	BL	@HEXIN
+  FA80   1606           	JNE	FIND03			;JNE ON HEXIN FLAG
+  FA82   03A0           	WREN
+  FA84   DA42 FFFF      	MOVB	R2,@0FFFFH(R9)
+  FA88   06C2           	SWPB	R2
+  FA8A   03A0           	WREN
+  FA8C   D642           	MOVB	R2,*R9
+  FA8E   0281 2000      FIND03	CI	R1,' '*256
+  FA92   13E2           	JEQ	FIND01
+  FA94   10D0           	JMP	MON00C
+                        ;
+                        ; INSTRUCTION G
+                        ;
+  FA96   16CF           GO	JNE	MON00C				;JNE ON HEXIN FLAG
+  FA98   0452           	B	*R2
+                        ;
+                        ; INSTRUCTION L
+                        ;
+  FA9A   4C6F 773D      LMESS0	TEXT	'Low='
+  FA9E   00             	BYTE	0
+  FA9F   00             	EVEN
+  FAA0   1602           LOWW	JNE	LOW00				;JNE ON HEXIN FLAG
+  FAA2   C3C2           	MOV	R2,R15
+  FAA4   10C8           	JMP	MON00C
+  FAA6   2CE0 F0B9      LOW00	XOP	@MESS03,3			;PRINT INDENTATION
+  FAAA   2CE0 FA9A      	XOP	@LMESS0,3			;PRINT "LOW="
+  FAAE   C08F           	MOV	R15,R2				;PRINT USER WORKSPACE
+  FAB0   06A0 F1DE      	BL	@HEXOUT0
+  FAB4   10C0           	JMP	MON00C
+                        ;
+                        ; INSTRUCTION W
+                        ;
+  FAB6   1603           WP	JNE	WP00				;JNE ON HEXIN FLAG
+  FAB8   C802 EFFA      	MOV	R2,@2*R13+INT3WP
+  FABC   10BC           	JMP	MON00C
+  FABE   2CE0 F0B9      WP00	XOP	@MESS03,3			;PRINT INDENTATION
+  FAC2   2CE0 F697      	XOP	@IMESS1+2,3			;PRINT "WP="
+  FAC6   C0A0 EFFA      	MOV	@2*R13+INT3WP,R2
+  FACA   06A0 F1DE      	BL	@HEXOUT0
+  FACE   10B3           	JMP	MON00C
+                        ;
+                        ; INSTRUCTION O
+                        ;
+  FAD0   C10F           OUTPUT	MOV	R15,R4
+  FAD2   C0C3           	MOV	R3,R3
+  FAD4   1601           	JNE	OUTPUT0
+  FAD6   C102           	MOV	R2,R4
+  FAD8   0244 FFFE      OUTPUT0 ANDI	R4,0FFFEH		;MAKE ADDRESS EVEN
+  FADC   C144           	MOV	R4,R5
+  FADE   0245 FFF0      	ANDI	R5,0FFF0H
+  FAE2   0225 0080      	AI	R5,80H
+  FAE6   2CE0 F0BA      OUTPUT1	XOP	@MESS03+1,3		;PRINT INDENTATION
+  FAEA   C084           	MOV	R4,R2
+  FAEC   06A0 F1DE      	BL	@HEXOUT0		;PRINT ADDRESS
+  FAF0   2CE0 F0C0      	XOP	@MESS03+7,3		;PRINT " "
+  FAF4   C0B4           OUTPUT2 MOV	*R4+,R2
+  FAF6   06A0 F1DA      	BL	@HEXOUT
+  FAFA   8144           	C	R4,R5
+  FAFC   1304           	JEQ	OUTPUT3
+  FAFE   2520 F14E      	CZC	@MASK16,R4
+  FB02   13F1           	JEQ	OUTPUT1
+  FB04   10F7           	JMP	OUTPUT2
+  FB06   2C81           OUTPUT3	XOP	R1,2			;GET CHARACTER
+  FB08   0281 2000      	CI	R1,' '*256
+  FB0C   1694           	JNE	MON00C
+  FB0E   0225 0080      	AI	R5,80H			;AN EXTRA 4 LINES
+  FB12   10E9           	JMP	OUTPUT1
+                        
+                        ;
+                        ;	LOAD HEX FILE 
+                        ;
+                        ;	ALGORITHM TAKEN FROM DDJ #22
+                        ;
+                        ;	R3  HOLDS CHECKSUM
+                        ;	R4  HOLDS RECORD LENGTH
+                        ;	R5  HOLDS LOAD ADDRESS	
+                        ;
+                        ;
+                        
+                        ;
+  FB14                  	EVEN
+                        ;
+  FB14   0202 3A00      HEXLOAD LI	R2,':'*256
+  FB18   2C81           	READ	R1		;SEARCH FOR ':'
+  FB1A   9081           	CB	R1,R2		;COMPARE BYTE FOR :
+  FB1C   16FB           	JNE	HEXLOAD
+  FB1E   2CE0 F3E4      	WRITE	@DOT		;DEBUG INFO
+  FB22   04C3           	CLR 	R3		;CLEAR CHECKSUM
+  FB24   2C20 FB56      	CALL	@NEXTBYTE	;GET RECORD LENGTH
+  FB28   D101           	MOVB	R1,R4
+  FB2A   0984           	SRL	R4,8		;LENGTH IN R4
+  FB2C   1312           	JEQ	A16		;WERE DONE
+  FB2E   2C20 FB70      	CALL	@NEXTADDR	;GET LOAD ADDRESS
+  FB32   C141           	MOV	R1,R5
+  FB34   2C20 FB56      	CALL	@NEXTBYTE	;GET RECORD TYPE
+  FB38   C104           A7	MOV	R4,R4		;IF RL=0 GO TO A13
+  FB3A   1305           	JEQ	A13
+  FB3C   2C20 FB56      	CALL	@NEXTBYTE
+  FB40   DD41           	MOVB	R1,*R5+		;STORE DATA IN MEMORY
+  FB42   0604           	DEC	R4		;REDUCE RECORD LENGTH
+  FB44   10F9           	JMP	A7
+  FB46   2C20 FB56      A13	CALL	@NEXTBYTE	;GET CHECKSUM BYTE 
+  FB4A   D0C3           	MOVB	R3,R3		;CHECK FOR ZERO
+  FB4C   13E3           	JEQ	HEXLOAD
+                        ;
+                        ; FALL THROUGH TO ERROR
+                        ;
+  FB4E   2CE0 F3E6      	WRITE	@LOADERR		;TELL TERMINAL SYSTEM TO STOP
+  FB52   0460 F054      A16	B	@PROMPT			;BACK TO TIMON
+                        ;
+                        NEXTBYTE 
+  FB56   04C2           	CLR 	R2			;ACCUMULATOR
+  FB58   2C81           	READ	R1			
+  FB5A   2C20 FB80      	CALL	@CATOH			;CONVERT ASCII TO HEX
+  FB5E   D081           	MOVB	R1,R2
+  FB60   0A42           	SLA	R2,4			;MOVE IT OVER
+  FB62   2C81           	READ	R1			;NEXT ASCII CHAR
+  FB64   2C20 FB80      	CALL	@CATOH
+  FB68   F081           	SOCB	R1,R2			;BYTE NOW IN R1
+  FB6A   C042           	MOV	R2,R1
+  FB6C   B0C1           	AB	R1,R3			;UPDATE CHECKSUM
+  FB6E   2C40           	RET
+                        ;
+                        NEXTADDR 
+  FB70   2C20 FB56      	CALL	@NEXTBYTE
+  FB74   C141           	MOV	R1,R5
+  FB76   2C20 FB56      	CALL	@NEXTBYTE
+  FB7A   06C1           	SWPB	R1
+  FB7C   E045           	SOC	R5,R1
+  FB7E   2C40           	RET
+                        ;
+                        ;	ASCII TO HEX CONVERTER
+                        ;
+  FB80   0281 3900      CATOH	CI	R1,'9'*256
+  FB84   1202           	JLE	GOTONE
+  FB86   0221 0900      	AI	R1,0900H		;ALPHA ADJUST
+  FB8A   0241 0F00      GOTONE	ANDI	R1,0F00H
+  FB8E   2C40           	RET
+                        ;
+                        ;---ATTEMPT A COLD BOOT
+                        ;
+  E600                  MONITOR EQU	0E600H
+  E630                  BOOT	EQU	MONITOR+12*4		;PERFORM A COLD BOOT
+                        
+  FB90   0420 E600      QBOOT	BLWP	@MONITOR		;NEED TO SET UP MONITOR
+  FB94   0460 E630      	B	@BOOT			;BRANCH HERE TO LOAD THE SYSTEM
+                        ;
+                        ;---INITIALISE TMS9902 FOR : 	*BAUD RATE
+                        ;				*8 BITS/CHARACTER
+                        ;				*NO PARITY
+                        ;				*2 STOP BITS
+                        ;
+  FB98   020C 0080      INITIO	LI	R12,CRUBASE
+  FB9C   1D1F           	SBO	31				;RESET TMS9902
+  FB9E   3220 FBD0      	LDCR	@CTL02,8
+  FBA2   1E0D           	SBZ	13				;DO NOT SET INTERVAL REGISTER
+  FBA4   04C3           	CLR	R3				;RESET LOOP COUNT
+  FBA6   1F0F           TSTSP	TB	15				;SPACE
+  FBA8   13FE           	JEQ	TSTSP				;NO JUMP BACK
+  FBAA   0583           SPLOOP	INC	R3				;TIME THE START BIT
+  FBAC   1F0F           	TB	15				;FALL OUT ON MARK
+  FBAE   16FD           	JNE	SPLOOP
+                        ;
+                        ;---TABLE SEARCH FOR BAUD RATES
+                        ;	SET AT 19200
+                        ;
+  FBB0   0207 FBD2      	LI	R7,BD19200		;SET POINTER TO TABLE
+  FBB4   0207 FBD6      	LI	R7,BD9600		;SET POINTER TO TABLE
+  FBB8   05C7           	INCT	R7
+  FBBA   1004           	JMP	BDMATCH			;FORCE THE BAUD RATE TO BE 19200
+                        ;
+                        ;	NOT USED
+                        ;
+  FBBC   8DC3           BDLOOP	C	R3,*R7+			;DO WE HAVE A MATCH ?
+  FBBE   1202           	JLE	BDMATCH			;YES , SET BAUD RATE
+  FBC0   05C7           	INCT	R7			;NO UPDATE POINTER
+  FBC2   10FC           	JMP	BDLOOP
+                        
+                        ;
+                        ; LOAD THE BAUD RATE VALUES
+                        ;	
+  FBC4   3317           BDMATCH LDCR	*R7,12 			;INT RECV/TXMT DATA RATE 
+  FBC6   32D7           	LDCR	*R7,11 
+  FBC8   3607           	STCR	R7,8			;PULL OUT ANY JUNK
+  FBCA   3607           	STCR	R7,8
+  FBCC   0460 F00C      	B	@START
+                        ;	
+  FBD0   43             CTL02	BYTE	43H			;43H FOR A 3 MHZ CLOCK 4B FOR A 4 MHZ CLOCK
+  FBD1   00             	EVEN
+  FBD2   0009 001A      BD19200 WORD	9,1AH			;BAUD RATE = 19200
+  FBD6   0013 0034      BD9600	WORD 	19,34H			;BAUD RATE = 9600
+  FBDA   0027 0068      	WORD	39,68H			;BAUD RATE = 4800
+  FBDE   004F 00D0      	WORD	79,0D0H			;BAUD RATE = 2400
+  FBE2   009C 01A0      	WORD	156,1A0H		;BAUD RATE = 1200
+  FBE6   0138 0340      	WORD	312,340H		;BAUD RATE = 600
+  FBEA   0308 04D0      	WORD	776,4D0H		;BAUD RATE = 300
+                        ;
+                        ;
+                        ;---Place load vectors into FFFC & FFFE
+                        ;
+  FFFC                  	AORG	0FFFCH
+  FFFC   EFA0           	WORD	WORKSP
+  FFFE   F002           	WORD	INITIAL
+                        ;
+  0000                  	END
+
+No error(s).
+OPEN              F1FC    INST07            F45A    ONER              F92C    INST08            F476
+OPEN01            F204    GO                FA96    XOP2BB            F188    INST09            F47E
+TRACE             F654    NEXTBYTE          FB56    CHAR              F240    HEXOUTX           F1E0
+CHAR00            F244    NUMTAB            F0F0    TYPE6             F362    MON02             F06A
+KSIX              F90A    SETBP01           F640    CHAR04            F26C    DELIM             F492
+CHAR05            F276    CODE040           F8CE    PROMPT            F054    INT3EE            F6F2
+OUTPUT2           FAF4    DELIM00           F4A0    TYPE1             F282    PRINT             F780
+HEXOUT0           F1DE    CODE00            F890    MMESS1            F9C9    RR                F0DE
+BD19200           FBD2    PRINT00           F788    BDMATCH           FBC4    INT3              F6A4
+C02ATAB           F7DA    CODE04            F8B4    PMNEM             F9AC    CODE02            F89A
+RET               2C40    TYPE9             F386    C2ATAB            F7CA    CODE08            F8D0
+POPREG            2D40    SETUP01           F688    MESS00            F096    DOT               F3E4
+MESS02            F0B5    XOP0              F154    MESS04            F0C2    MASK8             F150
+SIX06             F5F8    XOP1              F15C    HASH              F0D6    XOPWP             EFC0
+SMESS0            F602    XOP2              F160    MON00A            F226    XOP3              F18A
+MON00B            F7A6    XOP4              F1A0    BD9600            FBD6    R11               000B
+OUTPUT3           FB06    XOP5              F1AC    TYPE2             F2B2    REGIST1           F754
+HEXOUT1           F1E6    SIXBITD           F954    CTL02             FBD0    TSTSP             FBA6
+RESTAB            F07A    LOW00             FAA6    NEXTADDR          FB70    START             F00C
+SETBP00           F622    HEXLOAD           FB14    INT3DD            F6E4    TYPE4             F312
+R15               000F    SIX03             F5C4    PUSHREG           2D00    INST10            F48E
+IMMR              F916    MASK3             F152    IMESS0            F692    HEXIN             F1B6
+IMESS1            F695    BDLOOP            FBBC    IMESS3            F69D    CFIELD            F8EC
+SETUP             F66A    CODE100           F852    TYPE8             F37E    SETBP02           F650
+HEXTAB            F0E0    MON03             F070    LF                000A    OUTPUT0           FAD8
+SUBTAB            F124    INT3FF            F716    REGIST0           F73E    XOP3A             F190
+FALSE             0000    DSIX              F8F8    WORKSP            EFA0    MASK32            F14C
+SIXBIT3           F9AA    HEXIN0            F1BC    ERR1              F5F4    HEXIN1            F1C4
+R2                0002    HEXIN2            F1D2    R3                0003    READ              2C80
+R4                0004    STEP              F666    SIX02             F5C2    GETRC             F556
+REGIST            F732    REG               F934    R8                0008    MOVE01            FA24
+ATHASH            F0D5    PRINT01           F790    INST01            F40C    MOVE02            FA2C
+INST02            F426    MOVE              F9DA    INST04            F440    GETRC00           F564
+INST06            F452    REG00             F94C    OPEN00            F200    MOVE04            FA3A
+OPEN03            F21C    MOVE00            FA1C    LOWRAM            0001    OUTPUT            FAD0
+CHAR02            F250    INIT1             F02E    SIX05             F5DC    INT3AA            F6AE
+WRITE             2CC0    CR                000D    SIX00             F5A2    FMESS00           FA3E
+MMESS2            F9CD    LOWW              FAA0    TOUPPER           F170    REGIST2           F75A
+INT3CC            F6D8    R12               000C    R14               000E    QBOOT             FB90
+MESS01            F0AE    XOP0AA            F156    TYPE7             F376    CRUBASE           0080
+IMM               F920    XOP2AA            F164    CODE4             F876    ERROR             F4A6
+SIXBIT2           F994    XOP4AA            F1A2    MONITOR           E600    I3TAB             F68C
+SETBP             F616    T1                F4AC    A7                FB38    T2                F4C0
+COMMA             F0D8    TYPE5             F352    INITIO            FB98    T3                F4E0
+HIRAM             0000    T4                F4E8    SIXBITS           F950    T100              F4BA
+SIX07             F5FC    T5                F518    R                 F0DA    T101              F4BC
+R10               000A    TYSUB             F3D2    XCUTE             F660    TYSHIFT           F3B6
+R1                0001    T200              F4D6    INITIAL           F002    T400              F50E
+R6                0006    TRUE              0001    R9                0009    T7                F53E
+INST00            F3F6    T9                F474    INST05            F44C    T6                F52E
+OPEN02            F212    T201              F4DA    CHAR01            F248    T8                F548
+DISASM            F7FA    SIX04             F5DA    MMESS0            F9BE    A13               FB46
+HEXOUT            F1DA    SPLOOP            FBAA    BANNER            F050    CODE2             F85C
+DISASM1           F81C    CODE101           F84E    MON00C            FA36    INT3WP            EFE0
+GETRC03           F58A    TIMON             0000    MON01             F060    TYBASE            F3C0
+MASK16            F14E    SIXBIT0           F96C    A16               FB52    OUTPUT1           FAE6
+DISASM2           F85A    INT3GG            F71E    R0                0000    INTAB             F110
+R5                0005    CATOH             FB80    WP                FAB6    XOP3B             F19C
+WP00              FABE    GOTONE            FB8A    CHAR03            F262    XOPTAB            F08A
+GETRC02           F57E    LOADERR           F3E6    MESS03            F0B9    LMESS0            FA9A
+PADDRC            F22A    SIXBIT            F958    INSTANT           F3F2    GETRC01           F57A
+SETUP00           F678    FIND              FA48    TYPE3             F2D2    FIND01            FA58
+INST03            F436    FIND00            FA4C    SIX               F590    FIND02            FA66
+SMESS1            F60E    FIND03            FA8E    IMESS2            F69B    INIT2             F04A
+C0ATAB            F7AA    INITO             F018    BOOT              E630    CALL              2C00
+INT3BB            F6B8    TYTAB             F3A2    R13               000D    R7                0007
+

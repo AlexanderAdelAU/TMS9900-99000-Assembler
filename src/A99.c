@@ -133,25 +133,25 @@ int main(int argc, char *argv[])
 		while (n > 0)
 		{
 			linptr = linbuf;
-			for (m = 0; m < 4; m++)
+			for (m = 0; m < 4; m++)  //Output 4 symbols per line
 			{
 				memcpy(linptr,sympoint->symname,SYMLEN);
 				linptr += SYMLEN;
 				*linptr++ = ' ';
-				*linptr++ = ' ';
-				puthex4(sympoint->symvalu,&linptr);
+				//*linptr++ = ' ';
+				puthex4(sympoint->symvalu, &linptr);
+				//(sympoint->symvalu,&linptr);
 
-
-				*linptr++ = ' ';
-				*linptr++ = ' ';
+				//*linptr++ = ' ';
+				//*linptr++ = ' ';
 				*linptr++ = ' ';
 				*linptr++ = ' ';
 				sympoint++;
 				if (--n <= 0) break;
 			}
-			linptr -= 4;
+		//	linptr -= 4;
 			*linptr++ = '\n';
-			*linptr = '\0';
+			*linptr = '\0'; //Terminate the string
 			putlin(linbuf,&lstbuf);
 		}
 		putchr(CPMEOF,&lstbuf);

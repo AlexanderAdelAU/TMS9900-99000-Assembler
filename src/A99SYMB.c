@@ -85,26 +85,26 @@ returns the number of entries in the table.
 
 Set flag if you just want a count
 */
-short int sortsym(unsigned char flag)
-{
-	short int n;
+short int sortsym(unsigned char flag) {
+	short int n, t;
 	struct symbtbl *tptr;
 	n = 0;
-	for (tptr = sympoint = symtbl; tptr < symend; tptr++)
-	{
-		if ((tptr -> symname[0] & 0x7f) != '\0')
-		{
+	t = sizeof(symtbl) / SYMBOLS;
+	for (tptr = sympoint = symtbl; tptr < symend; tptr++) {
+		if ((tptr->symname[0] & 0x7f) != '\0') {
 
-			if(!flag )
-			{
-			    memcpy(sympoint->symname,tptr->symname,(SYMLEN+2));
+			if (!flag) {
+				/*	strcpy(sympoint->symname,tptr->symname);
+				 sympoint->symvalu = tptr->symvalu;
+				 sympoint->symflg=tptr->symflg; */
+				memcpy(sympoint->symname, tptr->symname, t);
 				sympoint++;
 			}
 			n++;
 		}
 	}
-	if(flag) return n;
-	 qsort(&symtbl,n,(SYMLEN+2),&symcmp);
+	if (!flag)
+		qsort(&symtbl, n, t, symcmp); /* 2 Bytes for addr 1 Byte for flags */
 	return n;
 }
 

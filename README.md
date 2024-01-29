@@ -108,10 +108,8 @@ RECAL             E610    R8                0008    WRREC             E61C    R9
 RDREC             E618    SELDSK            E60C    BOOT              C402    R11               000B
 R0                0000    LOADER            C600    STAT              C460    SEEK              E614
 WRITE             2F00    READ              2F40    RDID              E620    PUSH              2E00
-
-  </pre>
 R15               000F    BOOT2             C434    WORKSP            C462    R12               000C
 STACKP            C4A2    TIMON             F000    R1                0001    MESG              2F80
 R10               000A    MSG1              C440    MSG2              C450    WBOOT             E624
 MONITOR           E600
-
+  </pre>

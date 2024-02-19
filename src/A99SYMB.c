@@ -67,13 +67,10 @@ short int hash(char *symbol)
 	j=0;
 	for (i = 0; i < (SYMLEN / 2); i++)
 	{
-	//	tsymbl = (*symbol++ << 1);
-	//	tsymbr = (*symbol++) << 2;
-		tsymbl = (*symbol++ << 7);
-		tsymbr = (*symbol++) << 1;
-		/* The above fixed  a problem with certain symbols not being found */
-	//	j += (*symbol++ << 8) + (*symbol++);
-		j += (tsymbl + tsymbr);
+	//Revised hash algorithm improves performance 20/2/2024
+		tsymbl = (*symbol++ << 8);
+		tsymbr = (*symbol++) >> 0;
+		j += (tsymbl ^ tsymbr);
 
 	}
 	return(j % SYMBOLS);
